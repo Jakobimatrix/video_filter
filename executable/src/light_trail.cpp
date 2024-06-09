@@ -60,17 +60,122 @@ void displayProgressBar(float progress) {
   std::cout.flush();
 }
 
+
+std::string typeToString(int type) {
+  switch (type) {
+    case CV_8UC1:
+      return "CV_8UC1";
+    case CV_8UC2:
+      return "CV_8UC2";
+    case CV_8UC3:
+      return "CV_8UC3";
+    case CV_8UC4:
+      return "CV_8UC4";
+    case CV_16SC1:
+      return "CV_16SC1";
+    case CV_16SC2:
+      return "CV_16SC2";
+    case CV_16SC3:
+      return "CV_16SC3";
+    case CV_16SC4:
+      return "CV_16SC4";
+    case CV_16UC1:
+      return "CV_16UC1";
+    case CV_16UC2:
+      return "CV_16UC2";
+    case CV_16UC3:
+      return "CV_16UC3";
+    case CV_16UC4:
+      return "CV_16UC4";
+    case CV_32SC1:
+      return "CV_32SC1";
+    case CV_32SC2:
+      return "CV_32SC2";
+    case CV_32SC3:
+      return "CV_32SC3";
+    case CV_32SC4:
+      return "CV_32SC4";
+    case CV_32FC1:
+      return "CV_32FC1";
+    case CV_32FC2:
+      return "CV_32FC2";
+    case CV_32FC3:
+      return "CV_32FC3";
+    case CV_32FC4:
+      return "CV_32FC4";
+    case CV_64FC1:
+      return "CV_64FC1";
+    case CV_64FC2:
+      return "CV_64FC2";
+    case CV_64FC3:
+      return "CV_64FC3";
+    case CV_64FC4:
+      return "CV_64FC4";
+    default:
+      return "Unknown type";
+  }
+}
+
 bool areMatsCompatible(const cv::Mat& mat1, const cv::Mat& mat2) {
   if (mat1.size() != mat2.size() || mat1.type() != mat2.type()) {
     std::cerr << "Matrix size or type mismatch!" << std::endl;
-    std::cerr << "Mat1 - Size: " << mat1.size() << ", Type: " << mat1.type() << std::endl;
-    std::cerr << "Mat2 - Size: " << mat2.size() << ", Type: " << mat2.type() << std::endl;
+    std::cerr << "Mat1 - Size: " << mat1.size()
+              << ", Type: " << typeToString(mat1.type()) << std::endl;
+    std::cerr << "Mat2 - Size: " << mat2.size()
+              << ", Type: " << typeToString(mat2.type()) << std::endl;
     return false;
   }
   return true;
 }
 
+cv::Mat createHaloMask(const cv::Mat& mask, int haloPixelSize) {
+  // Distance transform
+  cv::Mat dist;
+  cv::distanceTransform(mask, dist, cv::DIST_L2, 5);
+  cv::normalize(dist, dist, 0, 255, cv::NORM_MINMAX);  // Normalize to [0, 255] range
 
+  // Create the halo mask
+  cv::Mat haloMask = cv::Mat::zeros(mask.size(), CV_8U);
+  for (int y = 0; y < dist.rows; ++y) {
+    for (int x = 0; x < dist.cols; ++x) {
+      // Calculate halo intensity based on distance
+      float intensity = std::max(0.0f, 255.0f - dist.at<float>(y, x) / haloPixelSize);
+      haloMask.at<uchar>(y, x) = static_cast<uchar>(intensity);
+    }
+  }
+
+  return haloMask;
+}
+
+cv::Mat convertFloatToInt(const cv::Mat& floatMat) {
+  // Ensure input Mat is of type float
+  CV_Assert(floatMat.type() == CV_32FC(floatMat.channels()));
+
+  // Convert float Mat to integer Mat
+  cv::Mat intMat;
+  floatMat.convertTo(intMat, CV_32S);  // Convert float to integer
+
+  // Scale integer values to the range [0, 255]
+  intMat *= 255;
+  intMat /= 255;
+
+  // Convert integer Mat back to original type
+  intMat.convertTo(intMat, floatMat.type());
+
+  return intMat;
+}
+
+// Convert integer Mat to floating point Mat
+cv::Mat convertIntToFloat(const cv::Mat& intMat) {
+  // Ensure input Mat is of type integer
+  CV_Assert(intMat.depth() == CV_32S);
+
+  // Convert integer Mat to floating point Mat
+  cv::Mat floatMat;
+  intMat.convertTo(floatMat, CV_32F, 1.0 / 255);  // Scale to range [0, 1]
+
+  return floatMat;
+}
 
 int main(int argc, char** argv) {
 
@@ -141,14 +246,14 @@ int main(int argc, char** argv) {
       // Perform region growing from the brightest point
       mask = regionGrowing(gray, maxLoc, threshold);
     }
-
+    mask = createHaloMask(mask, haloPixelSize);
     cv::cvtColor(mask, maskColor, cv::COLOR_GRAY2BGR);
 
+    areMatsCompatible(accumulatedLightColorMask, maskColor);
+    accumulatedLightColorMask = cv::max(accumulatedLightColorMask, maskColor);
+    lightTrail = cv::max(lightTrail, accumulatedLightColorMask.mul(frame / 255.0));
 
-    cv::bitwise_or(accumulatedLightColorMask, maskColor, accumulatedLightColorMask);
-    cv::bitwise_or(lightTrail, maskColor & frame, lightTrail);
-
-    cv::bitwise_or(frame, accumulatedLightColorMask & lightTrail, frame);
+    frame = cv::max(frame, lightTrail);
     writer.write(frame);
 
     // Update and display progress bar
