@@ -60,14 +60,32 @@ void displayProgressBar(float progress) {
   std::cout.flush();
 }
 
+bool areMatsCompatible(const cv::Mat& mat1, const cv::Mat& mat2) {
+  if (mat1.size() != mat2.size() || mat1.type() != mat2.type()) {
+    std::cerr << "Matrix size or type mismatch!" << std::endl;
+    std::cerr << "Mat1 - Size: " << mat1.size() << ", Type: " << mat1.type() << std::endl;
+    std::cerr << "Mat2 - Size: " << mat2.size() << ", Type: " << mat2.type() << std::endl;
+    return false;
+  }
+  return true;
+}
+
+
+
 int main(int argc, char** argv) {
+
+#ifndef NDEBUG
+  std::string inputFile = "/home/jakob/projects/video_filter/test/in.mp4";
+  std::string outputFile = "/home/jakob/projects/video_filter/test/out.mp4";
+#else
   if (argc != 3) {
     std::cerr << "Usage: " << argv[0] << " <input_video> <output_video>" << std::endl;
     return -1;
   }
-
   std::string inputFile = argv[1];
   std::string outputFile = argv[2];
+#endif
+
   std::string fileExtension = getExtension(outputFile);
 
   cv::VideoCapture cap(inputFile);
@@ -101,9 +119,12 @@ int main(int argc, char** argv) {
   }
 
   std::vector<cv::Mat> masks;
-  cv::Mat frame, gray, mask, accumulatedFrame;
+  cv::Mat frame, gray, mask, maskColor;
+  cv::Mat lightTrail = cv::Mat::zeros(frameHeight, frameWidth, CV_8UC3);
+  cv::Mat accumulatedLightColorMask = cv::Mat::zeros(frameHeight, frameWidth, CV_8UC3);
 
-  double threshold = 10.0;
+  double threshold = 30.0;
+  int haloPixelSize = 50;
 
   constexpr bool useRegionCrowing = false;
 
@@ -114,32 +135,21 @@ int main(int argc, char** argv) {
     cv::Point minLoc, maxLoc;
     cv::minMaxLoc(gray, &minVal, &maxVal, &minLoc, &maxLoc);
 
-    if constexpr (useRegionCrowing) {
+    if constexpr (!useRegionCrowing) {
       cv::threshold(gray, mask, maxVal - threshold, 255, cv::THRESH_BINARY);
     } else {
       // Perform region growing from the brightest point
       mask = regionGrowing(gray, maxLoc, threshold);
     }
-    masks.push_back(mask);
 
-    // Initialize the accumulated frame with the current frame
-    accumulatedFrame = frame.clone();
+    cv::cvtColor(mask, maskColor, cv::COLOR_GRAY2BGR);
 
-    // Add previous frames where the mask is active
-    for (int i = 0; i < frameCount; ++i) {
-      cv::Mat coloredMask;
-      cv::cvtColor(masks[i], coloredMask, cv::COLOR_GRAY2BGR);
-      cv::bitwise_and(coloredMask, masks[i], coloredMask);
-      cv::Mat previousFrame;
-      cap.set(cv::CAP_PROP_POS_FRAMES, i);
-      cap.read(previousFrame);
-      cv::Mat previousMaskedFrame;
-      cv::bitwise_and(previousFrame, coloredMask, previousMaskedFrame);
-      cv::bitwise_or(accumulatedFrame, previousMaskedFrame, accumulatedFrame);
-    }
 
-    // Save the current accumulated frame to video
-    writer.write(accumulatedFrame);
+    cv::bitwise_or(accumulatedLightColorMask, maskColor, accumulatedLightColorMask);
+    cv::bitwise_or(lightTrail, maskColor & frame, lightTrail);
+
+    cv::bitwise_or(frame, accumulatedLightColorMask & lightTrail, frame);
+    writer.write(frame);
 
     // Update and display progress bar
     frameCount++;

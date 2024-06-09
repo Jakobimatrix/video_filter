@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0)
 
 project("video_filter" VERSION 3.0
              DESCRIPTION "contains multiple little executables for video filtering."
-             HOMEPAGE_URL "https://github.com/Jakobimatrix/TODO")
+             HOMEPAGE_URL "https://github.com/Jakobimatrix/video_filter")
 
 
 #set(CMAKE_VERBOSE_MAKEFILE ON)
