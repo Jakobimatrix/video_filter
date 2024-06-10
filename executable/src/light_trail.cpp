@@ -4,6 +4,7 @@
 #include <opencv2/opencv.hpp>
 #include <queue>
 #include <string>
+#include <video_filter/CommandLineParser.hpp>
 
 std::string getExtension(const std::string& filename) {
   size_t dotPos = filename.find_last_of(".");
@@ -128,68 +129,23 @@ bool areMatsCompatible(const cv::Mat& mat1, const cv::Mat& mat2) {
   return true;
 }
 
-cv::Mat createHaloMask(const cv::Mat& mask, int haloPixelSize) {
-  // Distance transform
-  cv::Mat dist;
-  cv::distanceTransform(mask, dist, cv::DIST_L2, 5);
-  cv::normalize(dist, dist, 0, 255, cv::NORM_MINMAX);  // Normalize to [0, 255] range
-
-  // Create the halo mask
-  cv::Mat haloMask = cv::Mat::zeros(mask.size(), CV_8U);
-  for (int y = 0; y < dist.rows; ++y) {
-    for (int x = 0; x < dist.cols; ++x) {
-      // Calculate halo intensity based on distance
-      float intensity = std::max(0.0f, 255.0f - dist.at<float>(y, x) / haloPixelSize);
-      haloMask.at<uchar>(y, x) = static_cast<uchar>(intensity);
-    }
-  }
-
-  return haloMask;
-}
-
-cv::Mat convertFloatToInt(const cv::Mat& floatMat) {
-  // Ensure input Mat is of type float
-  CV_Assert(floatMat.type() == CV_32FC(floatMat.channels()));
-
-  // Convert float Mat to integer Mat
-  cv::Mat intMat;
-  floatMat.convertTo(intMat, CV_32S);  // Convert float to integer
-
-  // Scale integer values to the range [0, 255]
-  intMat *= 255;
-  intMat /= 255;
-
-  // Convert integer Mat back to original type
-  intMat.convertTo(intMat, floatMat.type());
-
-  return intMat;
-}
-
-// Convert integer Mat to floating point Mat
-cv::Mat convertIntToFloat(const cv::Mat& intMat) {
-  // Ensure input Mat is of type integer
-  CV_Assert(intMat.depth() == CV_32S);
-
-  // Convert integer Mat to floating point Mat
-  cv::Mat floatMat;
-  intMat.convertTo(floatMat, CV_32F, 1.0 / 255);  // Scale to range [0, 1]
-
-  return floatMat;
-}
 
 int main(int argc, char** argv) {
 
-#ifndef NDEBUG
-  std::string inputFile = "/home/jakob/projects/video_filter/test/in.mp4";
-  std::string outputFile = "/home/jakob/projects/video_filter/test/out.mp4";
-#else
-  if (argc != 3) {
-    std::cerr << "Usage: " << argv[0] << " <input_video> <output_video>" << std::endl;
-    return -1;
-  }
-  std::string inputFile = argv[1];
-  std::string outputFile = argv[2];
-#endif
+  std::unordered_map<std::string, InputParser::Option> options = {
+      {"-threshold", {"30", false, false}},
+      {"-halo_radius", {"50", false, false}},
+      {"-use_region_growing", {"false", false, false}}};
+  std::vector<std::string> positionalArgs = {"input_video", "output_video"};
+
+  InputParser input(argc, argv, options, positionalArgs);
+
+  const int threshold = input.getCmdOption<int>("-threshold");
+  const int haloPixelSize = input.getCmdOption<int>("-halo_radius");
+  const bool useRegionCrowing = input.getCmdOption<bool>("-use_region_growing");
+  const std::string inputFile = input.getCmdOption<std::string>("input_video");
+  const std::string outputFile =
+      input.getCmdOption<std::string>("output_video");
 
   std::string fileExtension = getExtension(outputFile);
 
@@ -223,15 +179,12 @@ int main(int argc, char** argv) {
     return -1;
   }
 
-  std::vector<cv::Mat> masks;
   cv::Mat frame, gray, mask, maskColor;
   cv::Mat lightTrail = cv::Mat::zeros(frameHeight, frameWidth, CV_8UC3);
   cv::Mat accumulatedLightColorMask = cv::Mat::zeros(frameHeight, frameWidth, CV_8UC3);
 
-  double threshold = 30.0;
-  int haloPixelSize = 50;
+  const int gaussKernalSize = haloPixelSize % 2 == 1 ? haloPixelSize : haloPixelSize + 1;
 
-  constexpr bool useRegionCrowing = false;
 
   int frameCount = 0;
   while (cap.read(frame)) {
@@ -240,21 +193,27 @@ int main(int argc, char** argv) {
     cv::Point minLoc, maxLoc;
     cv::minMaxLoc(gray, &minVal, &maxVal, &minLoc, &maxLoc);
 
-    if constexpr (!useRegionCrowing) {
+    if (!useRegionCrowing) {
       cv::threshold(gray, mask, maxVal - threshold, 255, cv::THRESH_BINARY);
     } else {
       // Perform region growing from the brightest point
       mask = regionGrowing(gray, maxLoc, threshold);
     }
-    mask = createHaloMask(mask, haloPixelSize);
+    cv::GaussianBlur(mask, mask, cv::Size(gaussKernalSize, gaussKernalSize), 0, 0);
+    cv::threshold(mask, mask, 50, 255, cv::THRESH_BINARY);
+    cv::GaussianBlur(mask, mask, cv::Size(gaussKernalSize, gaussKernalSize), 0, 0);
+
     cv::cvtColor(mask, maskColor, cv::COLOR_GRAY2BGR);
 
-    areMatsCompatible(accumulatedLightColorMask, maskColor);
     accumulatedLightColorMask = cv::max(accumulatedLightColorMask, maskColor);
-    lightTrail = cv::max(lightTrail, accumulatedLightColorMask.mul(frame / 255.0));
+    lightTrail = cv::max(lightTrail, maskColor.mul(frame / 255.0));
+
+    // cv::imshow("1", lightTrail);
+    // cv::waitKey(0);
 
     frame = cv::max(frame, lightTrail);
     writer.write(frame);
+
 
     // Update and display progress bar
     frameCount++;
