@@ -5,6 +5,9 @@
 #include <queue>
 #include <string>
 #include <video_filter/CommandLineParser.hpp>
+#include <video_filter/RoiSelect.hpp>
+#include <video_filter/frame.hpp>
+#include <video_filter/tracker.hpp>
 
 std::string getExtension(const std::string& filename) {
   size_t dotPos = filename.find_last_of(".");
@@ -129,8 +132,17 @@ bool areMatsCompatible(const cv::Mat& mat1, const cv::Mat& mat2) {
   return true;
 }
 
+cv::Mat getAffine(const cv::Point2f& translation, const float angel) {
+  return (cv::Mat_<float>(2, 3) << std::cos(angel),
+          -std::sin(angel),
+          translation.x,
+          std::sin(angel),
+          std::cos(angel),
+          translation.y);
+}
 
 int main(int argc, char** argv) {
+
 
   std::unordered_map<std::string, InputParser::Option> options = {
       {"-threshold", {"30", false, false}},
@@ -155,11 +167,6 @@ int main(int argc, char** argv) {
     return -1;
   }
 
-  const int frameWidth = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-  const int frameHeight = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
-  const int fps = static_cast<int>(cap.get(cv::CAP_PROP_FPS));
-  const int totalFrames = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
-
   int codec;
   if (fileExtension == "mp4") {
     codec = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
@@ -172,6 +179,11 @@ int main(int argc, char** argv) {
     return -1;
   }
 
+  const int frameWidth = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+  const int frameHeight = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+  const int fps = static_cast<int>(cap.get(cv::CAP_PROP_FPS));
+  const int totalFrames = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
+
   cv::VideoWriter writer(outputFile, codec, fps, cv::Size(frameWidth, frameHeight));
 
   if (!writer.isOpened()) {
@@ -179,39 +191,85 @@ int main(int argc, char** argv) {
     return -1;
   }
 
-  cv::Mat frame, gray, mask, maskColor;
+  cv::Mat frame, roiMask;
   cv::Mat lightTrail = cv::Mat::zeros(frameHeight, frameWidth, CV_8UC3);
-  cv::Mat accumulatedLightColorMask = cv::Mat::zeros(frameHeight, frameWidth, CV_8UC3);
 
   const int gaussKernalSize = haloPixelSize % 2 == 1 ? haloPixelSize : haloPixelSize + 1;
 
+  const auto getROI = [](const cv::Size& frameSize, cv::Point2d center, double radius) {
+    const cv::Point2d topLeft(std::max(0., center.x - radius),
+                              std::max(0., center.y - radius));
+    const double size = radius * 2.;
+    const cv::Point2d bottomRight(
+        std::min(topLeft.x + size, static_cast<double>(frameSize.width)),
+        std::min(topLeft.y + size, static_cast<double>(frameSize.height)));
+    return cv::Rect(
+        topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+  };
+
+  cv::Point2d prevLight(-1., -1.);
 
   int frameCount = 0;
+  double roiRadius = 0;
+  std::unique_ptr<Tracker> tracker = nullptr;
   while (cap.read(frame)) {
-    cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-    double minVal, maxVal;
-    cv::Point minLoc, maxLoc;
-    cv::minMaxLoc(gray, &minVal, &maxVal, &minLoc, &maxLoc);
-
-    if (!useRegionCrowing) {
-      cv::threshold(gray, mask, maxVal - threshold, 255, cv::THRESH_BINARY);
-    } else {
-      // Perform region growing from the brightest point
-      mask = regionGrowing(gray, maxLoc, threshold);
+    Frame f{frame, std::chrono::nanoseconds(frameCount)};
+    if (tracker == nullptr) {
+      RoiSelect roiSelector(frame);
+      cv::Rect2d roi;
+      if (roiSelector.selectRoi(&roi)) {
+        tracker = std::make_unique<Tracker>(f, roi);
+        roiRadius = std::max(roi.width, roi.height);
+      }
+      frameCount++;
+      continue;
     }
-    cv::GaussianBlur(mask, mask, cv::Size(gaussKernalSize, gaussKernalSize), 0, 0);
-    cv::threshold(mask, mask, 50, 255, cv::THRESH_BINARY);
-    cv::GaussianBlur(mask, mask, cv::Size(gaussKernalSize, gaussKernalSize), 0, 0);
+    if (!tracker->track(f)) {
+      break;
+    }
 
-    cv::cvtColor(mask, maskColor, cv::COLOR_GRAY2BGR);
+    const cv::Point2d lightPos = tracker->getLastTrack().second;
+    const cv::Rect roi = getROI(frame.size(), lightPos, roiRadius);
+    cv::Mat light = frame(roi).clone();
 
-    accumulatedLightColorMask = cv::max(accumulatedLightColorMask, maskColor);
-    lightTrail = cv::max(lightTrail, maskColor.mul(frame / 255.0));
+    cv::Mat debug = frame.clone();
+    cv::circle(debug, lightPos, 30, cv::Scalar(0, 255, 0), 2);
+    cv::circle(debug, lightPos, 60, cv::Scalar(0, 255, 0), 2);
+    cv::circle(debug, lightPos, 90, cv::Scalar(0, 255, 0), 2);
+    cv::resize(debug, debug, debug.size() / 5);
+    cv::imshow("tracker", debug);
+    cv::waitKey(1);
 
-    // cv::imshow("1", lightTrail);
-    // cv::waitKey(0);
+
+    cv::Point2f translation(0.0);
+    if (prevLight.x > 0.) {
+      translation = prevLight - lightPos;
+    }
+    prevLight = lightPos;
+
+    // Apply the translation incrementally and accumulate the results into lightTrail
+    const int steps = std::ceil(
+        std::sqrt(translation.x * translation.x + translation.y + translation.y));  // Number of interpolation steps
+    for (int i = 1; i <= steps; ++i) {
+      cv::Mat translatedLight = cv::Mat::zeros(light.size(), light.type());
+      float alpha = static_cast<double>(i) / steps;
+
+      cv::warpAffine(
+          light, translatedLight, getAffine(translation * alpha, 0), light.size());
+      cv::Rect roiTransformed = roi & cv::Rect(0, 0, lightTrail.cols, lightTrail.rows);
+      if (roiTransformed.area() <= 0) {
+        std::cerr << "Invalid transformed ROI, skipping frame" << std::endl;
+        continue;
+      }
+      lightTrail(roi) = cv::max(lightTrail(roi), translatedLight);
+    }
+    if (steps == 0) {
+      lightTrail(roi) = cv::max(lightTrail(roi), light);
+    }
+
 
     frame = cv::max(frame, lightTrail);
+
     writer.write(frame);
 
 
@@ -220,6 +278,7 @@ int main(int argc, char** argv) {
     float progress = static_cast<float>(frameCount) / totalFrames;
     displayProgressBar(progress);
   }
+  displayProgressBar(1.);
 
   cap.release();
   writer.release();
