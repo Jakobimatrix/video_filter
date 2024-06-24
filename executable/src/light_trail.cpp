@@ -1,11 +1,11 @@
 #include <cmath>
-#include <iomanip>
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include <queue>
 #include <string>
 #include <video_filter/CommandLineParser.hpp>
 #include <video_filter/RoiSelect.hpp>
+#include <video_filter/detail/ProgressBar.hpp>
 #include <video_filter/frame.hpp>
 #include <video_filter/tracker.hpp>
 
@@ -49,88 +49,7 @@ cv::Mat regionGrowing(const cv::Mat& gray, cv::Point seed, double threshold) {
   return mask;
 }
 
-void displayProgressBar(float progress) {
-  int barWidth = 50;
-  int pos = static_cast<int>(std::round(progress * barWidth));
-  std::cout << "[";
-  for (int i = 0; i < barWidth; ++i) {
-    if (i < pos)
-      std::cout << "#";
-    else
-      std::cout << " ";
-  }
-  std::cout << "] " << std::setw(3)
-            << static_cast<int>(std::round(progress * 100.0)) << "%\r";
-  std::cout.flush();
-}
 
-
-std::string typeToString(int type) {
-  switch (type) {
-    case CV_8UC1:
-      return "CV_8UC1";
-    case CV_8UC2:
-      return "CV_8UC2";
-    case CV_8UC3:
-      return "CV_8UC3";
-    case CV_8UC4:
-      return "CV_8UC4";
-    case CV_16SC1:
-      return "CV_16SC1";
-    case CV_16SC2:
-      return "CV_16SC2";
-    case CV_16SC3:
-      return "CV_16SC3";
-    case CV_16SC4:
-      return "CV_16SC4";
-    case CV_16UC1:
-      return "CV_16UC1";
-    case CV_16UC2:
-      return "CV_16UC2";
-    case CV_16UC3:
-      return "CV_16UC3";
-    case CV_16UC4:
-      return "CV_16UC4";
-    case CV_32SC1:
-      return "CV_32SC1";
-    case CV_32SC2:
-      return "CV_32SC2";
-    case CV_32SC3:
-      return "CV_32SC3";
-    case CV_32SC4:
-      return "CV_32SC4";
-    case CV_32FC1:
-      return "CV_32FC1";
-    case CV_32FC2:
-      return "CV_32FC2";
-    case CV_32FC3:
-      return "CV_32FC3";
-    case CV_32FC4:
-      return "CV_32FC4";
-    case CV_64FC1:
-      return "CV_64FC1";
-    case CV_64FC2:
-      return "CV_64FC2";
-    case CV_64FC3:
-      return "CV_64FC3";
-    case CV_64FC4:
-      return "CV_64FC4";
-    default:
-      return "Unknown type";
-  }
-}
-
-bool areMatsCompatible(const cv::Mat& mat1, const cv::Mat& mat2) {
-  if (mat1.size() != mat2.size() || mat1.type() != mat2.type()) {
-    std::cerr << "Matrix size or type mismatch!" << std::endl;
-    std::cerr << "Mat1 - Size: " << mat1.size()
-              << ", Type: " << typeToString(mat1.type()) << std::endl;
-    std::cerr << "Mat2 - Size: " << mat2.size()
-              << ", Type: " << typeToString(mat2.type()) << std::endl;
-    return false;
-  }
-  return true;
-}
 
 cv::Mat getAffine(const cv::Point2f& translation, const float angel) {
   return (cv::Mat_<float>(2, 3) << std::cos(angel),
@@ -208,7 +127,9 @@ int main(int argc, char** argv) {
   };
 
   cv::Point2d prevLight(-1., -1.);
+  bool prevLightSet = false;
 
+  ProgressBar progress_bar(totalFrames);
   int frameCount = 0;
   double roiRadius = 0;
   std::unique_ptr<Tracker> tracker = nullptr;
@@ -242,9 +163,10 @@ int main(int argc, char** argv) {
 
 
     cv::Point2f translation(0.0);
-    if (prevLight.x > 0.) {
+    if (prevLightSet) {
       translation = prevLight - lightPos;
     }
+    prevLightSet = true;
     prevLight = lightPos;
 
     // Apply the translation incrementally and accumulate the results into lightTrail
@@ -275,10 +197,9 @@ int main(int argc, char** argv) {
 
     // Update and display progress bar
     frameCount++;
-    float progress = static_cast<float>(frameCount) / totalFrames;
-    displayProgressBar(progress);
+    ++progress_bar;
+    progress_bar.display();
   }
-  displayProgressBar(1.);
 
   cap.release();
   writer.release();
