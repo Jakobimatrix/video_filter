@@ -171,7 +171,7 @@ int main(int argc, char** argv) {
 
     // Apply the translation incrementally and accumulate the results into lightTrail
     const int steps = std::ceil(
-        std::sqrt(translation.x * translation.x + translation.y + translation.y));  // Number of interpolation steps
+        std::sqrt(translation.x * translation.x + translation.y * translation.y));  // Number of interpolation steps
     for (int i = 1; i <= steps; ++i) {
       cv::Mat translatedLight = cv::Mat::zeros(light.size(), light.type());
       float alpha = static_cast<double>(i) / steps;
